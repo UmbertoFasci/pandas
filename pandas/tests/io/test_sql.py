@@ -64,6 +64,11 @@ pytestmark = [
 ]
 
 
+def table_uuid_gen(prefix: str) -> str:
+    """Generate a unique table name with context prefix."""
+    return f"{prefix}_{uuid.uuid4().hex}"
+
+
 @pytest.fixture
 def sql_strings():
     return {
