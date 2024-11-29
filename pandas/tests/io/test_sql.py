@@ -4114,6 +4114,7 @@ def test_sqlite_datetime_date(sqlite_buildin):
 @pytest.mark.parametrize("tz_aware", [False, True])
 def test_sqlite_datetime_time(tz_aware, sqlite_buildin):
     conn = sqlite_buildin
+    table_uuid = table_uuid_gen("test_time")
     # test support for datetime.time, GH #8341
     if not tz_aware:
         tz_times = [time(9, 0, 0), time(9, 1, 30)]
@@ -4123,8 +4124,8 @@ def test_sqlite_datetime_time(tz_aware, sqlite_buildin):
 
     df = DataFrame(tz_times, columns=["a"])
 
-    assert df.to_sql(name="test_time", con=conn, index=False) == 2
-    res = read_sql_query("SELECT * FROM test_time", conn)
+    assert df.to_sql(name=table_uuid, con=conn, index=False) == 2
+    res = read_sql_query(f"SELECT * FROM {table_uuid}", conn)
     # comes back as strings
     expected = df.map(lambda _: _.strftime("%H:%M:%S.%f"))
     tm.assert_frame_equal(res, expected)
@@ -4143,21 +4144,27 @@ def test_sqlite_test_dtype(sqlite_buildin):
     cols = ["A", "B"]
     data = [(0.8, True), (0.9, None)]
     df = DataFrame(data, columns=cols)
-    assert df.to_sql(name="dtype_test", con=conn) == 2
-    assert df.to_sql(name="dtype_test2", con=conn, dtype={"B": "STRING"}) == 2
+
+    table_uuid1 = table_uuid_gen("dtype_test")
+    table_uuid2 = table_uuid_gen("dtype_test2")
+    error_uuid = table_uuid_gen("error")
+    single_dtype_uuid = table_uuid_gen("single_dtype_test")
+
+    assert df.to_sql(name=table_uuid1, con=conn) == 2
+    assert df.to_sql(name=table_uuid2, con=conn, dtype={"B": "STRING"}) == 2
 
     # sqlite stores Boolean values as INTEGER
-    assert get_sqlite_column_type(conn, "dtype_test", "B") == "INTEGER"
+    assert get_sqlite_column_type(conn, table_uuid1, "B") == "INTEGER"
 
-    assert get_sqlite_column_type(conn, "dtype_test2", "B") == "STRING"
+    assert get_sqlite_column_type(conn, table_uuid2, "B") == "STRING"
     msg = r"B \(<class 'bool'>\) not a string"
     with pytest.raises(ValueError, match=msg):
-        df.to_sql(name="error", con=conn, dtype={"B": bool})
+        df.to_sql(name=error_uuid, con=conn, dtype={"B": bool})
 
     # single dtype
-    assert df.to_sql(name="single_dtype_test", con=conn, dtype="STRING") == 2
-    assert get_sqlite_column_type(conn, "single_dtype_test", "A") == "STRING"
-    assert get_sqlite_column_type(conn, "single_dtype_test", "B") == "STRING"
+    assert df.to_sql(name=single_dtype_uuid, con=conn, dtype="STRING") == 2
+    assert get_sqlite_column_type(conn, single_dtype_uuid, "A") == "STRING"
+    assert get_sqlite_column_type(conn, single_dtype_uuid, "B") == "STRING"
 
 
 def test_sqlite_notna_dtype(sqlite_buildin):
@@ -4170,7 +4177,7 @@ def test_sqlite_notna_dtype(sqlite_buildin):
     }
     df = DataFrame(cols)
 
-    tbl = "notna_dtype_test"
+    tbl = table_uuid_gen("notna_dtype_test")
     assert df.to_sql(name=tbl, con=conn) == 2
 
     assert get_sqlite_column_type(conn, tbl, "Bool") == "INTEGER"
@@ -4180,6 +4187,9 @@ def test_sqlite_notna_dtype(sqlite_buildin):
 
 
 def test_sqlite_illegal_names(sqlite_buildin):
+    # GH 60378
+    # NOTE: This test cannot be made parallel-safe as it needs to test SQLite's handling
+    # of specific table names. Adding uniqueness to the names would defeat the test's purpose.
     # For sqlite, these should work fine
     conn = sqlite_buildin
     df = DataFrame([[1, 2], [3, 4]], columns=["a", "b"])
@@ -4247,8 +4257,10 @@ def test_xsqlite_basic(sqlite_buildin):
         columns=Index(list("ABCD")),
         index=date_range("2000-01-01", periods=10, freq="B"),
     )
-    assert sql.to_sql(frame, name="test_table", con=sqlite_buildin, index=False) == 10
-    result = sql.read_sql("select * from test_table", sqlite_buildin)
+    table_uuid = table_uuid_gen("test_table")
+    table_uuid2 = table_uuid_gen("test_table2")
+    assert sql.to_sql(frame, name=table_uuid, con=sqlite_buildin, index=False) == 10
+    result = sql.read_sql(f"select * from {table_uuid}", sqlite_buildin)
 
     # HACK! Change this once indexes are handled properly.
     result.index = frame.index
@@ -4260,8 +4272,8 @@ def test_xsqlite_basic(sqlite_buildin):
     frame2 = frame.copy()
     new_idx = Index(np.arange(len(frame2)), dtype=np.int64) + 10
     frame2["Idx"] = new_idx.copy()
-    assert sql.to_sql(frame2, name="test_table2", con=sqlite_buildin, index=False) == 10
-    result = sql.read_sql("select * from test_table2", sqlite_buildin, index_col="Idx")
+    assert sql.to_sql(frame2, name=table_uuid2, con=sqlite_buildin, index=False) == 10
+    result = sql.read_sql(f"select * from {table_uuid2}", sqlite_buildin, index_col="Idx")
     expected = frame.copy()
     expected.index = new_idx
     expected.index.name = "Idx"
@@ -4275,18 +4287,19 @@ def test_xsqlite_write_row_by_row(sqlite_buildin):
         index=date_range("2000-01-01", periods=10, freq="B"),
     )
     frame.iloc[0, 0] = np.nan
-    create_sql = sql.get_schema(frame, "test")
+    table_uuid = table_uuid_gen("test")
+    create_sql = sql.get_schema(frame, table_uuid)
     cur = sqlite_buildin.cursor()
     cur.execute(create_sql)
 
-    ins = "INSERT INTO test VALUES (%s, %s, %s, %s)"
+    ins = f"INSERT INTO {table_uuid} VALUES (%s, %s, %s, %s)"
     for _, row in frame.iterrows():
         fmt_sql = format_query(ins, *row)
         tquery(fmt_sql, con=sqlite_buildin)
 
     sqlite_buildin.commit()
 
-    result = sql.read_sql("select * from test", con=sqlite_buildin)
+    result = sql.read_sql(f"select * from {table_uuid}", con=sqlite_buildin)
     result.index = frame.index
     tm.assert_frame_equal(result, frame, rtol=1e-3)
 
@@ -4297,17 +4310,18 @@ def test_xsqlite_execute(sqlite_buildin):
         columns=Index(list("ABCD")),
         index=date_range("2000-01-01", periods=10, freq="B"),
     )
-    create_sql = sql.get_schema(frame, "test")
+    table_uuid = table_uuid_gen("test")
+    create_sql = sql.get_schema(frame, table_uuid)
     cur = sqlite_buildin.cursor()
     cur.execute(create_sql)
-    ins = "INSERT INTO test VALUES (?, ?, ?, ?)"
+    ins = f"INSERT INTO {table_uuid} VALUES (?, ?, ?, ?)"
 
     row = frame.iloc[0]
     with sql.pandasSQL_builder(sqlite_buildin) as pandas_sql:
         pandas_sql.execute(ins, tuple(row))
     sqlite_buildin.commit()
 
-    result = sql.read_sql("select * from test", sqlite_buildin)
+    result = sql.read_sql(f"select * from {table_uuid}", sqlite_buildin)
     result.index = frame.index[:1]
     tm.assert_frame_equal(result, frame[:1])
 
@@ -4318,14 +4332,15 @@ def test_xsqlite_schema(sqlite_buildin):
         columns=Index(list("ABCD")),
         index=date_range("2000-01-01", periods=10, freq="B"),
     )
-    create_sql = sql.get_schema(frame, "test")
+    table_uuid = table_uuid_gen("test")
+    create_sql = sql.get_schema(frame, table_uuid)
     lines = create_sql.splitlines()
     for line in lines:
         tokens = line.split(" ")
         if len(tokens) == 2 and tokens[0] == "A":
             assert tokens[1] == "DATETIME"
 
-    create_sql = sql.get_schema(frame, "test", keys=["A", "B"])
+    create_sql = sql.get_schema(frame, table_uuid, keys=["A", "B"])
     lines = create_sql.splitlines()
     assert 'PRIMARY KEY ("A", "B")' in create_sql
     cur = sqlite_buildin.cursor()
@@ -4333,8 +4348,9 @@ def test_xsqlite_schema(sqlite_buildin):
 
 
 def test_xsqlite_execute_fail(sqlite_buildin):
-    create_sql = """
-    CREATE TABLE test
+    table_uuid = table_uuid_gen("test")
+    create_sql = f"""
+    CREATE TABLE {table_uuid}
     (
     a TEXT,
     b TEXT,
@@ -4346,16 +4362,17 @@ def test_xsqlite_execute_fail(sqlite_buildin):
     cur.execute(create_sql)
 
     with sql.pandasSQL_builder(sqlite_buildin) as pandas_sql:
-        pandas_sql.execute('INSERT INTO test VALUES("foo", "bar", 1.234)')
-        pandas_sql.execute('INSERT INTO test VALUES("foo", "baz", 2.567)')
+        pandas_sql.execute(f'INSERT INTO {table_uuid} VALUES("foo", "bar", 1.234)')
+        pandas_sql.execute(f'INSERT INTO {table_uuid} VALUES("foo", "baz", 2.567)')
 
         with pytest.raises(sql.DatabaseError, match="Execution failed on sql"):
-            pandas_sql.execute('INSERT INTO test VALUES("foo", "bar", 7)')
+            pandas_sql.execute(f'INSERT INTO {table_uuid} VALUES("foo", "bar", 7)')
 
 
 def test_xsqlite_execute_closed_connection():
-    create_sql = """
-    CREATE TABLE test
+    table_uuid = table_uuid_gen("test")
+    create_sql = f"""
+    CREATE TABLE {table_uuid}
     (
     a TEXT,
     b TEXT,
@@ -4368,16 +4385,17 @@ def test_xsqlite_execute_closed_connection():
         cur.execute(create_sql)
 
         with sql.pandasSQL_builder(conn) as pandas_sql:
-            pandas_sql.execute('INSERT INTO test VALUES("foo", "bar", 1.234)')
+            pandas_sql.execute(f'INSERT INTO {table_uuid} VALUES("foo", "bar", 1.234)')
 
     msg = "Cannot operate on a closed database."
     with pytest.raises(sqlite3.ProgrammingError, match=msg):
-        tquery("select * from test", con=conn)
+        tquery(f"select * from {table_uuid}", con=conn)
 
 
 def test_xsqlite_keyword_as_column_names(sqlite_buildin):
     df = DataFrame({"From": np.ones(5)})
-    assert sql.to_sql(df, con=sqlite_buildin, name="testkeywords", index=False) == 5
+    table_uuid = table_uuid_gen("testkeywords")
+    assert sql.to_sql(df, con=sqlite_buildin, name=table_uuid, index=False) == 5
 
 
 def test_xsqlite_onecolumn_of_integer(sqlite_buildin):
@@ -4385,21 +4403,22 @@ def test_xsqlite_onecolumn_of_integer(sqlite_buildin):
     # a column_of_integers dataframe should transfer well to sql
 
     mono_df = DataFrame([1, 2], columns=["c0"])
-    assert sql.to_sql(mono_df, con=sqlite_buildin, name="mono_df", index=False) == 2
+    table_uuid = table_uuid_gen("mono_df")
+    assert sql.to_sql(mono_df, con=sqlite_buildin, name=table_uuid, index=False) == 2
     # computing the sum via sql
     con_x = sqlite_buildin
-    the_sum = sum(my_c0[0] for my_c0 in con_x.execute("select * from mono_df"))
+    the_sum = sum(my_c0[0] for my_c0 in con_x.execute(f"select * from {table_uuid}"))
     # it should not fail, and gives 3 ( Issue #3628 )
     assert the_sum == 3
 
-    result = sql.read_sql("select * from mono_df", con_x)
+    result = sql.read_sql(f"select * from {table_uuid}", con_x)
     tm.assert_frame_equal(result, mono_df)
 
 
 def test_xsqlite_if_exists(sqlite_buildin):
     df_if_exists_1 = DataFrame({"col1": [1, 2], "col2": ["A", "B"]})
     df_if_exists_2 = DataFrame({"col1": [3, 4, 5], "col2": ["C", "D", "E"]})
-    table_name = "table_if_exists"
+    table_name = table_uuid_gen("table_if_exists")
     sql_select = f"SELECT * FROM {table_name}"
 
     msg = "'notvalidvalue' is not valid for if_exists"
@@ -4416,7 +4435,7 @@ def test_xsqlite_if_exists(sqlite_buildin):
     sql.to_sql(
         frame=df_if_exists_1, con=sqlite_buildin, name=table_name, if_exists="fail"
     )
-    msg = "Table 'table_if_exists' already exists"
+    msg = f"Table '{table_name}' already exists"
     with pytest.raises(ValueError, match=msg):
         sql.to_sql(
             frame=df_if_exists_1,
