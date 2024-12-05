@@ -1567,7 +1567,8 @@ def test_read_sql_iris_parameter(conn, request, sql_strings):
         )
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    query = sql_strings["read_parameters"][flavor(conn_name)]
+    table_uuid = table_uuid_gen("iris")
+    query = sql_strings["read_parameters"][flavor(conn_name)].replace("iris", table_uuid)
     params = ("Iris-setosa", 5.1)
     with pandasSQL_builder(conn) as pandasSQL:
         with pandasSQL.run_transaction():
@@ -1587,7 +1588,8 @@ def test_read_sql_iris_named_parameter(conn, request, sql_strings):
 
     conn_name = conn
     conn = request.getfixturevalue(conn)
-    query = sql_strings["read_named_parameters"][flavor(conn_name)]
+    table_uuid = table_uuid_gen("iris")
+    query = sql_strings["read_named_parameters"][flavor(conn_name)].replace("iris", table_uuid)
     params = {"name": "Iris-setosa", "length": 5.1}
     with pandasSQL_builder(conn) as pandasSQL:
         with pandasSQL.run_transaction():
@@ -1602,8 +1604,9 @@ def test_read_sql_iris_no_parameter_with_percent(conn, request, sql_strings):
 
     conn_name = conn
     conn = request.getfixturevalue(conn)
+    table_uuid = table_uuid_gen("iris")
 
-    query = sql_strings["read_no_parameters_with_percent"][flavor(conn_name)]
+    query = sql_strings["read_no_parameters_with_percent"][flavor(conn_name)].replace("iris", table_uuid)
     with pandasSQL_builder(conn) as pandasSQL:
         with pandasSQL.run_transaction():
             iris_frame = pandasSQL.read_query(query, params=None)
@@ -1617,7 +1620,8 @@ def test_read_sql_iris_no_parameter_with_percent(conn, request, sql_strings):
 @pytest.mark.parametrize("conn", all_connectable_iris)
 def test_api_read_sql_view(conn, request):
     conn = request.getfixturevalue(conn)
-    iris_frame = sql.read_sql_query("SELECT * FROM iris_view", conn)
+    table_uuid = table_uuid_gen("iris_view")
+    iris_frame = sql.read_sql_query(f"SELECT * FROM {table_uuid}", conn)
     check_iris_frame(iris_frame)
 
 
@@ -1628,7 +1632,8 @@ def test_api_read_sql_with_chunksize_no_result(conn, request):
             pytest.mark.xfail(reason="chunksize argument NotImplemented with ADBC")
         )
     conn = request.getfixturevalue(conn)
-    query = 'SELECT * FROM iris_view WHERE "SepalLength" < 0.0'
+    table_uuid = table_uuid_gen("iris_view")
+    query = f'SELECT * FROM {table_uuid} WHERE "SepalLength" < 0.0'
     with_batch = sql.read_sql_query(query, conn, chunksize=5)
     without_batch = sql.read_sql_query(query, conn)
     tm.assert_frame_equal(concat(with_batch), without_batch)
@@ -1776,8 +1781,9 @@ def test_api_roundtrip_chunksize(conn, request, test_frame1):
 def test_api_execute_sql(conn, request):
     # drop_sql = "DROP TABLE IF EXISTS test"  # should already be done
     conn = request.getfixturevalue(conn)
+    table_uuid = table_uuid_gen("iris")
     with sql.pandasSQL_builder(conn) as pandas_sql:
-        iris_results = pandas_sql.execute("SELECT * FROM iris")
+        iris_results = pandas_sql.execute(f"SELECT * FROM {table_uuid}")
         row = iris_results.fetchone()
         iris_results.close()
     assert list(row) == [5.1, 3.5, 1.4, 0.2, "Iris-setosa"]
@@ -2433,12 +2439,13 @@ def test_read_sql_delegate(conn, request):
         )
 
     conn = request.getfixturevalue(conn)
-    iris_frame1 = sql.read_sql_query("SELECT * FROM iris", conn)
-    iris_frame2 = sql.read_sql("SELECT * FROM iris", conn)
+    table_uuid = table_uuid_gen("iris")
+    iris_frame1 = sql.read_sql_query(f"SELECT * FROM {table_uuid}", conn)
+    iris_frame2 = sql.read_sql(f"SELECT * FROM {table_uuid}", conn)
     tm.assert_frame_equal(iris_frame1, iris_frame2)
 
-    iris_frame1 = sql.read_sql_table("iris", conn)
-    iris_frame2 = sql.read_sql("iris", conn)
+    iris_frame1 = sql.read_sql_table(table_uuid, conn)
+    iris_frame2 = sql.read_sql(table_uuid, conn)
     tm.assert_frame_equal(iris_frame1, iris_frame2)
 
 
@@ -2447,10 +2454,13 @@ def test_not_reflect_all_tables(sqlite_conn):
     from sqlalchemy import text
     from sqlalchemy.engine import Engine
 
+    invalid_uuid = table_uuid_gen("invalid")
+    other_uuid = table_uuid_gen("other_table")
+
     # create invalid table
     query_list = [
-        text("CREATE TABLE invalid (x INTEGER, y UNKNOWN);"),
-        text("CREATE TABLE other_table (x INTEGER, y INTEGER);"),
+        text(f"CREATE TABLE {invalid_uuid} (x INTEGER, y UNKNOWN);"),
+        text(f"CREATE TABLE {other_uuid} (x INTEGER, y INTEGER);"),
     ]
 
     for query in query_list:
@@ -2463,8 +2473,8 @@ def test_not_reflect_all_tables(sqlite_conn):
                 conn.execute(query)
 
     with tm.assert_produces_warning(None):
-        sql.read_sql_table("other_table", conn)
-        sql.read_sql_query("SELECT * FROM other_table", conn)
+        sql.read_sql_table(other_uuid, conn)
+        sql.read_sql_query(f"SELECT * FROM {other_uuid}", conn)
 
 
 @pytest.mark.parametrize("conn", all_connectable)
@@ -2474,21 +2484,24 @@ def test_warning_case_insensitive_table_name(conn, request, test_frame1):
         request.applymarker(pytest.mark.xfail(reason="Does not raise warning"))
 
     conn = request.getfixturevalue(conn)
+    table_uuid = table_uuid_gen("table1")
+    table_uuid_upper = table_uuid.upper()
     # see gh-7815
     with tm.assert_produces_warning(
         UserWarning,
         match=(
-            r"The provided table name 'TABLE1' is not found exactly as such in "
+            r"The provided table name '{}' is not found exactly as such in "
             r"the database after writing the table, possibly due to case "
             r"sensitivity issues. Consider using lower case table names."
-        ),
+        ).format(table_uuid_upper),
     ):
         with sql.SQLDatabase(conn) as db:
-            db.check_case_sensitive("TABLE1", "")
+            db.check_case_sensitive(table_uuid_upper, "")
 
     # Test that the warning is certainly NOT triggered in a normal case.
     with tm.assert_produces_warning(None):
-        test_frame1.to_sql(name="CaseSensitive", con=conn)
+        case_sensitive_uuid = table_uuid_gen("CaseSensitive")
+        test_frame1.to_sql(name=case_sensitive_uuid, con=conn)
 
 
 @pytest.mark.parametrize("conn", sqlalchemy_connectable)
